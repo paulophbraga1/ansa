@@ -1,0 +1,190 @@
+#!/usr/bin/python
+'''
+Created on Sep 22, 2017
+
+@author: t1687pn
+'''
+import os
+import glob
+
+if __name__ == '__main__':
+    print ('Changes a oilcanning force controlled to displacement controlled')
+    print ('===============================================================')
+    print ('===============  Update 2018 07 02 ============================')
+    print (' Stabilize card made as an option and reaction force is specified right here')
+    print (' Loading step is split into two steps. First step is till 0.5 mm')
+    print ('displacement. Second step stabilize is removed')
+    print ('and loading continued with Uamp. No change in unloading')
+    print ('Using stabilize in first step helps with convergence and as we are')
+    print ('taking it out after 0.5 mm of displacement, no significant change in')
+    print ('results were observed for any of the oilcanning targets')
+    print ('===============================================================')
+    cwd = os.getcwd()
+    print (cwd)
+    try:
+        os.makedirs('dispControlled')
+    except OSError:
+        if not os.path.isdir('dispControlled'):
+            raise
+
+    reacforce=400.0
+    modrf = raw_input("Default loading is to 400N. If you want to specify other loads, "
+            "you can specify it below. For roof, wipe zones suggested is 120N\n"
+            ">> ")
+    if modrf:
+        reacforce = float(modrf)
+        print ("Loading to %6.2f N" %reacforce)
+    else:
+        print ("Loading to 400N")
+
+    stabinstep=False
+    staticstep=False
+    askstatic=raw_input("\n\nPress y for a *static step, any other key for *dynamic step ]$ ")
+    if 'y' in askstatic.lower():
+        staticstep=True
+        print ('All input files will be *static steps')
+    else:
+        print ('All input files will be *dynamic, application=quasi-static steps')
+
+    askstabili=raw_input("\n\nPress y if you want to add stabilize card in the first step, any other key to not add ]$ ")
+    if 'y' in askstabili.lower():
+        stabinstep=True
+        print ('All input files will have stabilize card in first step')
+    else:
+        print ('No stabilize card added in first step')
+    inpfiles=glob.glob('*.inp')
+#     inpfiles=glob.glob('*.inp')[0:1]
+
+    for one_inp in inpfiles:
+        print ('Processing '),one_inp
+        if 'dcloc' in one_inp:
+            continue
+        dispcfilename=one_inp.replace('_loc','_dcloc')
+        if dispcfilename==one_inp:
+            continue
+    
+        with open(one_inp,'r') as fcinp:
+            with open('./dispControlled/'+dispcfilename,'w') as lcinp:
+                split_step=[]
+                stat_found=False
+                load_step=False
+                cload_l=False
+                fieldOut=False
+                hist_out=False
+                lc=0
+                matname=''
+                denfound=False
+                preprint=False
+                for line in fcinp:
+                    if line[:2]=='**':
+                        lcinp.write(line)
+                        continue
+                    if line[:9].upper()=='*PREPRINT':
+                        preprint=True
+                    if line[:5].upper()=='*NODE':
+                        if not preprint:
+                            lcinp.write('*PREPRINT, CONTACT=YES\n')
+                            preprint=True
+                    if line[:9].upper()=='*MATERIAL':
+                        matname=line.strip().split('=')[-1]
+                        lcinp.write(line)
+                        continue
+                    if 'GOMMA' in matname.upper():
+                        if line[:8].upper()=='*DENSITY':
+                            denfound=True
+                            lcinp.write(line)
+                            continue
+                        if line[:13].upper()=='*HYPERELASTIC' and not denfound:
+                            lcinp.write('*DENSITY\n                7.85E-11,\n')
+                            denfound=True
+                            lcinp.write(line)
+                            continue
+
+                    if hist_out:
+                        lc+=1
+                        if lc==5:
+                            hist_out=False
+                            lc=0
+                            continue
+                        else:
+                            continue
+                    if stat_found:
+                        stat_found=False
+                        continue
+                    if cload_l:
+                        cload_l=False
+                        continue
+                    if line[:9]=='*END STEP' and load_step:
+                        split_step.append('*END STEP\n**\n')
+                        load_step=False
+                        lcinp.write(line)
+                        for newl in split_step:
+                            lcinp.write(newl)
+                        continue
+                    if line[:9]=='*END STEP' and fieldOut:
+                        fieldOut=False
+                    if line[:28]=='*STEP, NAME=Indentor Loading':
+                        split_step.append('**\n**\n*STEP, NAME=UAMP Indentor Loading, INC=999, NLGEOM=YES, UNSYMM=YES\n')
+                        lcinp.write('**\n*Amplitude, name=limitingForce, definition=USER, variables=5,properties=1\n**<reaction_force>\n%f\n**\n' %reacforce)
+                        load_step=True
+                    
+                    if line[:7]=='*STATIC' and not load_step:
+                        if staticstep:
+                            lcinp.write('*STATIC\n')
+                        else:
+                            lcinp.write('*DYNAMIC, APPLICATION=QUASI-STATIC\n')
+                        lcinp.write('                   0.05,                       1.,                   1.E-15\n')
+                        lcinp.write('**\n**\n*BOUNDARY, TYPE=DISPLACEMENT, OP=MOD\n')
+                        lcinp.write('  999999,        3,        3,                       0.\n')
+                        stat_found=True
+                        continue
+                    
+                    if line[:23]=='*CONTACT PRINT, MASTER=':
+                        contlinehist=line.replace('PRINT','OUTPUT')
+                    
+                    if line[:30]=='*OUTPUT, HISTORY, TIME POINTS=':
+                        lcinp.write(contlinehist)
+                        lcinp.write('CFN,\n')
+                        lcinp.write("*ENERGY OUTPUT\n")
+                        lcinp.write('*Output, history, name=RfSensor, FREQUENCY=1,sensor\n')
+                        lcinp.write('*NODE OUTPUT, NSET=indentor_local_cs, GLOBAL=NO\n')
+                        lcinp.write('RF3,\n')
+                        lcinp.write('*Output, history, name=DispSensor, FREQUENCY=1,sensor\n')
+                        lcinp.write('*NODE OUTPUT, NSET=indentor_local_cs, GLOBAL=NO\n')
+                        lcinp.write('U3,\n')
+                        hist_out=True
+                        lc+=1
+                        continue
+ 
+                    if line[:7]=='*STATIC' and load_step:
+                        stat_found=True
+                        if staticstep:
+                            lcinp.write('*STATIC\n')
+                            split_step.append('*STATIC\n')
+                        else:
+                            lcinp.write('*DYNAMIC, APPLICATION=QUASI-STATIC\n')
+                            split_step.append('*DYNAMIC, APPLICATION=QUASI-STATIC\n')
+                        lcinp.write('    0.9,    1.,     1.E-15\n')
+                        if stabinstep:
+                            lcinp.write('**\n*CONTACT CONTROLS, STABILIZE=0.01\n**\n')
+                        else:
+                            lcinp.write('**\n**CONTACT CONTROLS, STABILIZE=0.01\n**\n')
+                        split_step.append('    0.015,    1.,     1.E-15, 0.02\n')
+                        continue
+                    if line[:6]=='*CLOAD' and load_step:
+                        cload_l=True
+                        lcinp.write('*BOUNDARY, TYPE=DISPLACEMENT\n')
+                        split_step.append('*BOUNDARY, amplitude=limitingForce\n')
+                        lcinp.write('  999999,        3,        ,                       -0.5\n')
+                        split_step.append('  999999,        3,        ,                       -1.0\n')
+                        continue
+                    if line[:28]=='*OUTPUT, FIELD, FREQUENCY=99':
+                        fieldOut=True
+                    if fieldOut and line[:30]=='*NODE OUTPUT, NSET=Node OutPut':
+                        lcinp.write('*NODE OUTPUT\n')
+                        continue
+                    if fieldOut and line[:54]=='*ELEMENT OUTPUT, ELSET=Element OutPut MISESMAX PEEQMAX':
+                        lcinp.write('*ELEMENT OUTPUT\n')
+                        continue
+
+                    lcinp.write(line)
